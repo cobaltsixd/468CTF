@@ -232,11 +232,21 @@ verify_codename(){
   [[ "$(printf '%s' "$entered" | normalize)" == "$(printf '%s' "$needed" | normalize)" ]]
 }
 
+STATE_DIR="/opt/ctf/state"
+USER_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ctf"
+# ...
 stamp_started(){
-  mkdir -p "$STATE_DIR"
-  : > "$STATE_DIR/started_$1"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  if : > "$STATE_DIR/started_$1" 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p "$USER_STATE" 2>/dev/null || true
+  : > "$USER_STATE/started_$1"
 }
-is_started(){ [[ -f "$STATE_DIR/started_$1" ]]; }
+is_started(){
+  [[ -f "$STATE_DIR/started_$1" || -f "$USER_STATE/started_$1" ]]
+}
+
 
 start_door(){
   local door="$1"
