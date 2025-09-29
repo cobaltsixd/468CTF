@@ -64,12 +64,19 @@ find "$CTF_BASE/state" "$CTF_BASE/challenges/02_forensics_stego" -type f -exec c
 STUDENT_ID="${CTF_STUDENT:-${SUDO_USER:-$(logname 2>/dev/null || echo student)}}"
 SALT="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c8 || echo RANDOM99)"
 echo "[*] Seeding flags for $STUDENT_ID (salt $SALT)"
+
+# private read-only flags group (ONLY 'ctf' should be in it)
+groupadd -f ctfflags
+usermod -aG ctfflags ctf || true
+# make flags dir non-world-readable and group-inheriting
+install -d -m 2750 -o root -g ctfflags "$CTF_BASE/flags"
+
 echo "WVUCTF{web_${STUDENT_ID}_${SALT}}"       > "$CTF_BASE/flags/flag_web.txt"
 echo "WVUCTF{forensics_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_forensics.txt"
 echo "WVUCTF{re_${STUDENT_ID}_${SALT}}"        > "$CTF_BASE/flags/flag_re.txt"
 echo "WVUCTF{crypto_${STUDENT_ID}_${SALT}}"    > "$CTF_BASE/flags/flag_crypto.txt"
 echo "WVUCTF{privesc_${STUDENT_ID}_${SALT}}"   > "$CTF_BASE/flags/flag_privesc.txt"
-chown root:ctfrw "$CTF_BASE/flags/"flag_*.txt
+chown root:ctfflags "$CTF_BASE/flags/"flag_*.txt
 chmod 640 "$CTF_BASE/flags/"flag_*.txt
 
 # --- scoreboard DB init ---
@@ -139,8 +146,12 @@ bash "$CTF_BASE/challenges/05_priv_esc_path_hijack/seed_notes.sh" || true
 # --- Forensics artifacts (Door 2): build once as 'ctf' and set perms ---
 echo "[*] Preparing FORENSICS artifacts"
 chmod +x "$CTF_BASE/challenges/02_forensics_stego/make_artifact.sh" 2>/dev/null || true
-sudo -u ctf bash "$CTF_BASE/challenges/02_forensics_stego/make_artifact.sh" || true
+# ensure dir exists & is group-writable before build
+install -d -m 2775 -o ctf -g ctfrw "$CTF_BASE/challenges/02_forensics_stego/artifacts"
+sudo -u ctf bash -lc 'umask 0002; /opt/ctf/challenges/02_forensics_stego/make_artifact.sh' || true
 chown -R ctf:ctfrw "$CTF_BASE/challenges/02_forensics_stego"
+find "$CTF_BASE/challenges/02_forensics_stego" -type d -exec chmod 2775 {} \;
+find "$CTF_BASE/challenges/02_forensics_stego" -type f -exec chmod 664 {} \; 2>/dev/null || true
 
 # --- Cruise Ship event: fixed door codes from repo + 'ctf' CLI install ---
 echo "[*] Installing Cruise Ship door codes + CLI"
@@ -179,7 +190,7 @@ Door 5 (PRIVESC)    : $PRIVESC_CODE
 EOF
 chmod 640 "$DOOR_CODES"
 
-# Install the 'ctf' CLI (case/space tolerant code check)
+# --- Install the 'ctf' CLI (with robust state + sudo start for WEB) ---
 install -m 0755 /dev/stdin /usr/local/bin/ctf <<'CTFEOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -187,6 +198,7 @@ umask 0002   # ensure files we create are group-writable
 
 META_ENV="/opt/ctf/challenges/meta.env"
 STATE_DIR="/opt/ctf/state"
+USER_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ctf"
 [ -f "$META_ENV" ] || { echo "Missing $META_ENV. Re-run setup."; exit 1; }
 # shellcheck disable=SC1090
 source "$META_ENV"
@@ -232,9 +244,7 @@ verify_codename(){
   [[ "$(printf '%s' "$entered" | normalize)" == "$(printf '%s' "$needed" | normalize)" ]]
 }
 
-STATE_DIR="/opt/ctf/state"
-USER_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/ctf"
-# ...
+# --- state helpers (robust to permission issues) ---
 stamp_started(){
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   if : > "$STATE_DIR/started_$1" 2>/dev/null; then
@@ -246,7 +256,6 @@ stamp_started(){
 is_started(){
   [[ -f "$STATE_DIR/started_$1" || -f "$USER_STATE/started_$1" ]]
 }
-
 
 start_door(){
   local door="$1"
@@ -273,6 +282,7 @@ start_door(){
     PRIVESC)
       bold "Door 5 (PRIVESC) — PATH hijack"
       echo "SUID: /usr/local/bin/ctf-notes"
+      echo "Flag path: /opt/ctf/flags/flag_privesc.txt (requires elevated read)"
       ;;
   esac
   stamp_started "$door"
@@ -345,7 +355,7 @@ systemctl daemon-reload
 systemctl enable --now 468ctf-scoreboard.service || true
 
 echo
-echo "✅ Setup finished."
+echo "Setup finished."
 echo "Scoreboard:   http://127.0.0.1:1337"
 echo "Door codes:   $CTF_BASE/door-codes.txt  (or: sudo ctf codes)"
 echo "Door 1 app:   http://127.0.0.1:5001  (starts after 'ctf menu' → WEB)"
