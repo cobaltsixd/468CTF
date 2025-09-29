@@ -1,0 +1,2 @@
+Cmnd_Alias CTFWEB = /bin/systemctl start 468ctf-vulnapp.service, /bin/systemctl stop 468ctf-vulnapp.service, /bin/systemctl restart 468ctf-vulnapp.service, /bin/systemctl status 468ctf-vulnapp.service
+%ctfweb ALL=(root) NOPASSWD: CTFWEB

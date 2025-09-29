@@ -220,7 +220,8 @@ start_door(){
   local door="$1"
   case "$door" in
     WEB)
-      systemctl enable --now 468ctf-vulnapp.service >/dev/null 2>&1 || true
+      # Start the Door 1 service without prompting (sudoers grants this)
+      sudo -n /bin/systemctl start 468ctf-vulnapp.service >/dev/null 2>&1 || true
       bold "Door 1 (WEB) — SQLi"
       echo "Open:  http://127.0.0.1:5001"
       echo "Score: http://127.0.0.1:1337"
@@ -295,13 +296,25 @@ main "$@"
 CTFEOF
 chmod 755 /usr/local/bin/ctf
 
+# --- allow non-root start/stop of Door 1 service (sudoers + group) ---
+echo "[*] Configuring sudoers so vagrant/ctf can control vulnapp"
+groupadd -f ctfweb
+usermod -aG ctfweb ctf || true
+usermod -aG ctfweb vagrant || true
+
+install -m 0440 /dev/stdin /etc/sudoers.d/468ctf-web <<'EOF'
+Cmnd_Alias CTFWEB = /bin/systemctl start 468ctf-vulnapp.service, /bin/systemctl stop 468ctf-vulnapp.service, /bin/systemctl restart 468ctf-vulnapp.service, /bin/systemctl status 468ctf-vulnapp.service
+%ctfweb ALL=(root) NOPASSWD: CTFWEB
+EOF
+visudo -cf /etc/sudoers.d/468ctf-web >/dev/null
+
 # --- enable scoreboard service now ---
 echo "[*] Enabling scoreboard service"
 systemctl daemon-reload
 systemctl enable --now 468ctf-scoreboard.service || true
 
 echo
-echo " Setup finished."
+echo "✅ Setup finished."
 echo "Scoreboard:   http://127.0.0.1:1337"
 echo "Door codes:   $CTF_BASE/door-codes.txt  (or: sudo ctf codes)"
 echo "Door 1 app:   http://127.0.0.1:5001  (starts after 'ctf menu' → WEB)"
