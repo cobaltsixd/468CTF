@@ -292,7 +292,7 @@ cmd_start(){
 cmd_status(){
   bold "Door start status (this VM):"
   for d in WEB FORENSICS RE CRYPTO PRIVESC; do
-    if is_started("$d"); then echo "  $d: started"; else echo "  $d: not started"; fi
+    if is_started "$d"; then echo "  $d: started"; else echo "  $d: not started"; fi
   done
 }
 
