@@ -48,6 +48,18 @@ cp -a "$CTF_BASE/src/challenges/"* "$CTF_BASE/challenges/" 2>/dev/null || true
 cp -a "$CTF_BASE/src/tools/"* "$CTF_BASE/tools/" 2>/dev/null || true
 chown -R ctf:ctf "$CTF_BASE/scoreboard" "$CTF_BASE/challenges" "$CTF_BASE/tools"
 
+# --- writable group for state + forensics artifacts ---
+echo "[*] Setting writable group for state and forensics artifacts"
+groupadd -f ctfrw
+usermod -aG ctfrw ctf || true
+usermod -aG ctfrw vagrant || true
+# ensure dirs exist
+mkdir -p "$CTF_BASE/state" "$CTF_BASE/challenges/02_forensics_stego/artifacts"
+# grant group write + setgid so new files inherit group
+chgrp -R ctfrw "$CTF_BASE/state" "$CTF_BASE/challenges/02_forensics_stego"
+find "$CTF_BASE/state" "$CTF_BASE/challenges/02_forensics_stego" -type d -exec chmod 2775 {} \;
+find "$CTF_BASE/state" "$CTF_BASE/challenges/02_forensics_stego" -type f -exec chmod 664 {} \; 2>/dev/null || true
+
 # --- seed flags (unique per VM) ---
 STUDENT_ID="${CTF_STUDENT:-${SUDO_USER:-$(logname 2>/dev/null || echo student)}}"
 SALT="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c8 || echo RANDOM99)"
@@ -57,7 +69,7 @@ echo "WVUCTF{forensics_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_forensics
 echo "WVUCTF{re_${STUDENT_ID}_${SALT}}"        > "$CTF_BASE/flags/flag_re.txt"
 echo "WVUCTF{crypto_${STUDENT_ID}_${SALT}}"    > "$CTF_BASE/flags/flag_crypto.txt"
 echo "WVUCTF{privesc_${STUDENT_ID}_${SALT}}"   > "$CTF_BASE/flags/flag_privesc.txt"
-chown root:ctf "$CTF_BASE/flags/"flag_*.txt
+chown root:ctfrw "$CTF_BASE/flags/"flag_*.txt
 chmod 640 "$CTF_BASE/flags/"flag_*.txt
 
 # --- scoreboard DB init ---
@@ -124,6 +136,12 @@ chown -R ctf:ctf "$CTF_BASE/challenges/04_crypto_xor"
 echo "[*] Seeding Priv-Esc helper"
 bash "$CTF_BASE/challenges/05_priv_esc_path_hijack/seed_notes.sh" || true
 
+# --- Forensics artifacts (Door 2): build once as 'ctf' and set perms ---
+echo "[*] Preparing FORENSICS artifacts"
+chmod +x "$CTF_BASE/challenges/02_forensics_stego/make_artifact.sh" 2>/dev/null || true
+sudo -u ctf bash "$CTF_BASE/challenges/02_forensics_stego/make_artifact.sh" || true
+chown -R ctf:ctfrw "$CTF_BASE/challenges/02_forensics_stego"
+
 # --- Cruise Ship event: fixed door codes from repo + 'ctf' CLI install ---
 echo "[*] Installing Cruise Ship door codes + CLI"
 META_DIR="$CTF_BASE/challenges"
@@ -165,6 +183,7 @@ chmod 640 "$DOOR_CODES"
 install -m 0755 /dev/stdin /usr/local/bin/ctf <<'CTFEOF'
 #!/usr/bin/env bash
 set -euo pipefail
+umask 0002   # ensure files we create are group-writable
 
 META_ENV="/opt/ctf/challenges/meta.env"
 STATE_DIR="/opt/ctf/state"
@@ -213,7 +232,10 @@ verify_codename(){
   [[ "$(printf '%s' "$entered" | normalize)" == "$(printf '%s' "$needed" | normalize)" ]]
 }
 
-stamp_started(){ mkdir -p "$STATE_DIR"; touch "$STATE_DIR/started_$1"; }
+stamp_started(){
+  mkdir -p "$STATE_DIR"
+  : > "$STATE_DIR/started_$1"
+}
 is_started(){ [[ -f "$STATE_DIR/started_$1" ]]; }
 
 start_door(){
@@ -270,7 +292,7 @@ cmd_start(){
 cmd_status(){
   bold "Door start status (this VM):"
   for d in WEB FORENSICS RE CRYPTO PRIVESC; do
-    if is_started "$d"; then echo "  $d: started"; else echo "  $d: not started"; fi
+    if is_started("$d"); then echo "  $d: started"; else echo "  $d: not started"; fi
   done
 }
 
@@ -301,7 +323,6 @@ echo "[*] Configuring sudoers so vagrant/ctf can control vulnapp"
 groupadd -f ctfweb
 usermod -aG ctfweb ctf || true
 usermod -aG ctfweb vagrant || true
-
 install -m 0440 /dev/stdin /etc/sudoers.d/468ctf-web <<'EOF'
 Cmnd_Alias CTFWEB = /bin/systemctl start 468ctf-vulnapp.service, /bin/systemctl stop 468ctf-vulnapp.service, /bin/systemctl restart 468ctf-vulnapp.service, /bin/systemctl status 468ctf-vulnapp.service
 %ctfweb ALL=(root) NOPASSWD: CTFWEB
