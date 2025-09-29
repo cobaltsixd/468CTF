@@ -1,0 +1,30 @@
+name: Build Bootstrap .deb
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Debian packaging dir
+        run: |
+          mkdir -p package_build/DEBIAN
+          cp -r DEBIAN/* package_build/DEBIAN/
+          mkdir -p package_build/usr/share/468ctf
+          cp -r README.md package_build/usr/share/468ctf/
+          # keep owner consistent
+          chmod -R 755 package_build/usr/share/468ctf || true
+          dpkg-deb --build --root-owner-group package_build
+          mv package_build.deb 468CTF-bootstrap.deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 468CTF-bootstrap-deb
+          path: 468CTF-bootstrap.deb

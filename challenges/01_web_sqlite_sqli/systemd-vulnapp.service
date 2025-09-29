@@ -1,0 +1,12 @@
+[Unit]
+Description=468CTF Vulnerable Web App
+After=468CTF-scoreboard.service
+
+[Service]
+WorkingDirectory=/opt/ctf/challenges/01_web_sqlite_sqli
+ExecStart=/usr/bin/python3 /opt/ctf/challenges/01_web_sqlite_sqli/app_vuln.py
+Restart=on-failure
+User=ctf
+
+[Install]
+WantedBy=multi-user.target

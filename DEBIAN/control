@@ -1,0 +1,9 @@
+Package: 468ctf-bootstrap
+Version: 1.0.0
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: Mickey Barry <mb00300@mix.wvu.edu>
+Depends: git, python3, python3-pip, sqlite3, gcc, zip, curl
+Description: WVU CYBE-468S Midterm CTF Bootstrap
+ Bootstrap package: clones the full 468CTF repo and runs the setup script.

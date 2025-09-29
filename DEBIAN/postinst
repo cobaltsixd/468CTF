@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+REPO_URL="${REPO_URL:-https://github.com/cobaltsixd/468CTF.git}"
+BRANCH="${BRANCH:-main}"
+DEST="/opt/468ctf-src"
+
+echo "[468CTF-bootstrap] Fetching repository from ${REPO_URL} (${BRANCH})"
+
+if [ -d "$DEST/.git" ]; then
+  git -C "$DEST" fetch --all -p
+  git -C "$DEST" checkout "$BRANCH" || true
+  git -C "$DEST" pull --ff-only || true
+else
+  rm -rf "$DEST"
+  git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$DEST"
+fi
+
+echo "[468CTF-bootstrap] Running setup.sh"
+if [ -x "$DEST/setup.sh" ]; then
+  bash "$DEST/setup.sh" || true
+else
+  echo "setup.sh not found or not executable in $DEST"
+fi
+
+echo "[468CTF-bootstrap] Done."
+exit 0

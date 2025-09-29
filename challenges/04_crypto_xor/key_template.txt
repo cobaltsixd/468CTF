@@ -1,0 +1,1 @@
+Please do not commit real keys here. Setup will write key.txt at /opt/ctf/challenges/04_crypto_xor/key.txt
