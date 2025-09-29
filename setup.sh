@@ -354,6 +354,8 @@ echo "[*] Enabling scoreboard service"
 systemctl daemon-reload
 systemctl enable --now 468ctf-scoreboard.service || true
 
+sudo systemctl restart 468ctf-scoreboard || true
+
 echo
 echo "Setup finished."
 echo "Scoreboard:   http://127.0.0.1:1337"
