@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-from flask import Flask, request, render_template_string, redirect, send_file
+from flask import Flask, request, render_template_string, redirect
 import sqlite3, time, os, json
 
 APP_DIR = os.path.dirname(__file__)
 DB = os.path.join(APP_DIR, "scores.db")
+
+# Flag file locations (created by setup.sh)
 FLAGS = {
     "WEB":        "/opt/ctf/flags/flag_web.txt",
     "FORENSICS":  "/opt/ctf/flags/flag_forensics.txt",
@@ -11,7 +13,18 @@ FLAGS = {
     "CRYPTO":     "/opt/ctf/flags/flag_crypto.txt",
     "PRIVESC":    "/opt/ctf/flags/flag_privesc.txt",
 }
+
+# Points per challenge
 POINTS = {"WEB": 100, "FORENSICS": 100, "RE": 125, "CRYPTO": 125, "PRIVESC": 150}
+
+# Cruise Ship "next stop" messages (shown after a correct submit)
+NEXT_LOC = {
+    "WEB":       "Next: I’m at the pool! Look for a 2 on the wall.",
+    "FORENSICS": "Next: 16 117 -762",
+    "RE":        "Next: -3 107 -762",
+    "CRYPTO":    "Next: 181 72 -762",
+    "PRIVESC":   "Next: -22 146 -767 (Finish!)",
+}
 
 app = Flask(__name__)
 
@@ -37,12 +50,16 @@ TEMPLATE = """
 """
 
 def q(conn, sql, args=()):
-    cur = conn.execute(sql, args); rows = cur.fetchall(); cur.close(); return rows
+    cur = conn.execute(sql, args)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
 
 def init_db():
     if not os.path.exists(DB):
         with sqlite3.connect(DB) as conn:
-            conn.executescript(open(os.path.join(APP_DIR,"schema.sql")).read())
+            schema = open(os.path.join(APP_DIR, "schema.sql")).read()
+            conn.executescript(schema)
 
 @app.route("/")
 def index():
@@ -58,42 +75,84 @@ def index():
 @app.route("/submit", methods=["POST"])
 def submit():
     student = request.form.get("student","").strip()
-    team = request.form.get("team","").strip()
-    chal = request.form.get("challenge","").strip().upper()
-    flag = request.form.get("flag","").strip()
+    team    = request.form.get("team","").strip()
+    chal    = request.form.get("challenge","").strip().upper()
+    flag    = request.form.get("flag","").strip()
+
     if chal not in FLAGS or not team or not student:
         return redirect("/")
+
+    # Load correct flag from disk
     try:
-        with open(FLAGS[chal],"r") as f:
+        with open(FLAGS[chal], "r") as f:
             correct = f.read().strip()
-    except:
+    except Exception:
         correct = "MISSING"
+
     ok = (flag == correct)
     ts = int(time.time())
+
     with sqlite3.connect(DB) as conn:
         if ok:
-            # award only once per student per challenge
+            # Award points ONCE per student per challenge:
+            before = conn.total_changes
             conn.execute("insert or ignore into solves(student, challenge) values(?,?)", (student, chal))
-            already = q(conn, "select 1 from solves where student=? and challenge=?", (student, chal))
-            if already:
-                conn.execute("insert into submissions(student, team, challenge, flag, correct, points, ts) values(?,?,?,?,?,?,?)",
-                             (student, team, chal, "REDACTED", 1, POINTS[chal], ts))
+            # If the solves row was newly inserted, award points; otherwise 0
+            awarded = (conn.total_changes > before)
+            pts = POINTS[chal] if awarded else 0
+            conn.execute(
+                "insert into submissions(student, team, challenge, flag, correct, points, ts) "
+                "values(?,?,?,?,?,?,?)",
+                (student, team, chal, "REDACTED", 1, pts, ts)
+            )
         else:
-            conn.execute("insert into submissions(student, team, challenge, flag, correct, points, ts) values(?,?,?,?,?,?,?)",
-                         (student, team, chal, flag, 0, 0, ts))
+            conn.execute(
+                "insert into submissions(student, team, challenge, flag, correct, points, ts) "
+                "values(?,?,?,?,?,?,?)",
+                (student, team, chal, flag, 0, 0, ts)
+            )
         conn.commit()
-    # on success, show the minecraft command
+
     if ok:
-        mc_cmd = f"/trigger {chal.lower()} set 1"
-        return f"<p>Correct! Paste this in Minecraft to open your door: <b>{mc_cmd}</b></p><p><a href='/'>Back</a></p>"
+        # Show both Java and Bedrock commands + the next location hint
+        java_cmd = f"/trigger {chal.lower()} set 1"
+        bedrock_cmd = f"/scoreboard players set @p {chal.lower()} 1"
+        nxt = NEXT_LOC.get(chal, "Next: ask your instructor.")
+        html = f"""
+          <h2>✔ Correct!</h2>
+          <p>Use one of these in Minecraft to open your door:</p>
+          <ul>
+            <li><b>Java:</b> {java_cmd}</li>
+            <li><b>Bedrock/Xbox:</b> {bedrock_cmd}</li>
+          </ul>
+          <h3>{nxt}</h3>
+          <p><a href='/'>Back to scoreboard</a></p>
+        """
+        return html
+
     return redirect("/")
 
 @app.route("/export")
 def export():
     with sqlite3.connect(DB) as conn:
-        rows = q(conn, "select student, team, challenge, correct, points, ts from submissions order by ts desc")
-    data = [{"student":r[0],"team":r[1],"challenge":r[2],"correct":int(r[3]),"points":int(r[4]),"ts":int(r[5])} for r in rows]
-    return app.response_class(response=json.dumps(data, indent=2), mimetype="application/json")
+        rows = q(conn, """
+            select student, team, challenge, correct, points, ts
+            from submissions order by ts desc
+        """)
+    data = [
+        {
+            "student":  r[0],
+            "team":     r[1],
+            "challenge":r[2],
+            "correct":  int(r[3]),
+            "points":   int(r[4]),
+            "ts":       int(r[5]),
+        } for r in rows
+    ]
+    return app.response_class(
+        response=json.dumps(data, indent=2),
+        mimetype="application/json"
+    )
 
 if __name__ == "__main__":
     init_db()
