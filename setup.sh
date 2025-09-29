@@ -1,64 +1,74 @@
 #!/usr/bin/env bash
-# setup.sh — run as root to create all CTF services and artifacts
+# setup.sh — run as root to create all CTF services, flags, challenges, and CLI
+# Works on Kali/Debian/Ubuntu. Binds everything to 127.0.0.1.
 set -euo pipefail
 
-# must run as root
+# --- safety: root check ---
 if [ "$(id -u)" -ne 0 ]; then
-  echo "This script must be run as root (sudo)."; exit 1
+  echo "This script must be run as root (sudo)." >&2
+  exit 1
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CTF_BASE="/opt/ctf"
+
+echo "[*] Preparing directories at $CTF_BASE"
 mkdir -p "$CTF_BASE"
 chown root:root "$CTF_BASE"
 chmod 755 "$CTF_BASE"
 
-echo "[*] Installing apt deps..."
+# --- deps ---
+echo "[*] Installing apt dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-pip sqlite3 gcc zip curl git
+apt-get install -y \
+  git curl rsync zip sqlite3 gcc \
+  python3 python3-pip python3-flask
 
-# create ctf user
-id -u ctf &>/dev/null || useradd -m -s /bin/bash ctf
+# --- ctf user ---
+if ! id -u ctf >/dev/null 2>&1; then
+  echo "[*] Creating user 'ctf'"
+  useradd -m -s /bin/bash ctf
+fi
 
-echo "[*] Copying repo content into $CTF_BASE..."
-rsync -a --delete "$REPO_ROOT/" "$CTF_BASE/src/"
+# --- copy repo into /opt/ctf/src ---
+echo "[*] Copying repo content into $CTF_BASE/src"
+mkdir -p "$CTF_BASE/src"
+rsync -a --delete "$REPO_ROOT"/ "$CTF_BASE/src/"
 
-# Create standard layout
-mkdir -p "$CTF_BASE/flags" "$CTF_BASE/scoreboard" "$CTF_BASE/challenges" "$CTF_BASE/state"
+# --- standard layout ---
+echo "[*] Creating standard layout"
+mkdir -p "$CTF_BASE/flags" "$CTF_BASE/scoreboard" "$CTF_BASE/challenges" "$CTF_BASE/state" "$CTF_BASE/tools"
 chown -R ctf:ctf "$CTF_BASE"
 
-# copy scoreboard files
-cp -a "$CTF_BASE/src/scoreboard/"* "$CTF_BASE/scoreboard/"
-chown -R ctf:ctf "$CTF_BASE/scoreboard"
+# --- copy scoreboard + challenges + tools from src ---
+echo "[*] Installing scoreboard, challenges, tools"
+cp -a "$CTF_BASE/src/scoreboard/"* "$CTF_BASE/scoreboard/" 2>/dev/null || true
+cp -a "$CTF_BASE/src/challenges/"* "$CTF_BASE/challenges/" 2>/dev/null || true
+cp -a "$CTF_BASE/src/tools/"* "$CTF_BASE/tools/" 2>/dev/null || true
+chown -R ctf:ctf "$CTF_BASE/scoreboard" "$CTF_BASE/challenges" "$CTF_BASE/tools"
 
-# copy challenges directory
-cp -a "$CTF_BASE/src/challenges/"* "$CTF_BASE/challenges/"
-chown -R ctf:ctf "$CTF_BASE/challenges"
-
-# copy tools
-mkdir -p "$CTF_BASE/tools"
-cp -a "$CTF_BASE/src/tools/"* "$CTF_BASE/tools/"
-chown -R ctf:ctf "$CTF_BASE/tools"
-
-# seed flags (unique per-VM). Students can set CTF_STUDENT env before running installer.
-STUDENT_ID="${CTF_STUDENT:-$(logname 2>/dev/null || echo student)}"
-SALT=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c8 || echo "RANDOM99")
+# --- seed flags (unique per VM) ---
+STUDENT_ID="${CTF_STUDENT:-${SUDO_USER:-$(logname 2>/dev/null || echo student)}}"
+SALT="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c8 || echo RANDOM99)"
 echo "[*] Seeding flags for $STUDENT_ID (salt $SALT)"
-echo "WVUCTF{web_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_web.txt"
+echo "WVUCTF{web_${STUDENT_ID}_${SALT}}"       > "$CTF_BASE/flags/flag_web.txt"
 echo "WVUCTF{forensics_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_forensics.txt"
-echo "WVUCTF{re_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_re.txt"
-echo "WVUCTF{crypto_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_crypto.txt"
-echo "WVUCTF{privesc_${STUDENT_ID}_${SALT}}" > "$CTF_BASE/flags/flag_privesc.txt"
-chmod 640 "$CTF_BASE/flags/"*
+echo "WVUCTF{re_${STUDENT_ID}_${SALT}}"        > "$CTF_BASE/flags/flag_re.txt"
+echo "WVUCTF{crypto_${STUDENT_ID}_${SALT}}"    > "$CTF_BASE/flags/flag_crypto.txt"
+echo "WVUCTF{privesc_${STUDENT_ID}_${SALT}}"   > "$CTF_BASE/flags/flag_privesc.txt"
+chown root:ctf "$CTF_BASE/flags/"flag_*.txt
+chmod 640 "$CTF_BASE/flags/"flag_*.txt
 
-# init scoreboard DB file
+# --- scoreboard DB init ---
 if [ ! -f "$CTF_BASE/scoreboard/scores.db" ]; then
+  echo "[*] Initializing scoreboard DB"
   sqlite3 "$CTF_BASE/scoreboard/scores.db" < "$CTF_BASE/scoreboard/schema.sql"
   chown ctf:ctf "$CTF_BASE/scoreboard/scores.db"
 fi
 
-# install scoreboard as systemd service
+# --- systemd: scoreboard service ---
+echo "[*] Installing systemd services"
 cat > /etc/systemd/system/468ctf-scoreboard.service <<'SERVICE'
 [Unit]
 Description=468CTF Local Scoreboard
@@ -74,10 +84,10 @@ User=ctf
 WantedBy=multi-user.target
 SERVICE
 
-# web vuln app as service (will be enabled only when started from ctf CLI)
+# --- systemd: vulnerable web app service (starts when Door 1 is begun) ---
 cat > /etc/systemd/system/468ctf-vulnapp.service <<'SERVICE'
 [Unit]
-Description=468CTF Vulnerable Web App
+Description=468CTF Vulnerable Web App (Door 1)
 After=468ctf-scoreboard.service
 
 [Service]
@@ -90,62 +100,68 @@ User=ctf
 WantedBy=multi-user.target
 SERVICE
 
-# permissions
-chown root:root /etc/systemd/system/468ctf-scoreboard.service /etc/systemd/system/468ctf-vulnapp.service
-chmod 644 /etc/systemd/system/468ctf-scoreboard.service /etc/systemd/system/468ctf-vulnapp.service
+chown root:root /etc/systemd/system/468ctf-*.service
+chmod 644 /etc/systemd/system/468ctf-*.service
 
-# prepare webapp DB
+# --- prepare web app DB (Door 1) ---
+echo "[*] Preparing WEB challenge DB"
 python3 "$CTF_BASE/challenges/01_web_sqlite_sqli/init_db.py" || true
 chown -R ctf:ctf "$CTF_BASE/challenges/01_web_sqlite_sqli"
 
-# build RE gate binary
+# --- build Reverse Engineering gate (Door 3) ---
+echo "[*] Building RE gate binary"
 bash "$CTF_BASE/challenges/03_reverse_engineering/build.sh" || true
 
-# generate crypto key and cipher
+# --- generate Crypto cipher (Door 4) ---
+echo "[*] Generating Crypto XOR cipher"
 mkdir -p "$CTF_BASE/challenges/04_crypto_xor"
-KEY=$(tr -dc 'A-Za-z0-9@!#%&' < /dev/urandom | head -c12 || echo 'MORG@ntown!')
+KEY="$(tr -dc 'A-Za-z0-9@!#%&' < /dev/urandom | head -c12 || echo 'MORG@ntown!')"
 echo "$KEY" > "$CTF_BASE/challenges/04_crypto_xor/key.txt"
-python3 "$CTF_BASE/challenges/04_crypto_xor/make_cipher.py"
+python3 "$CTF_BASE/challenges/04_crypto_xor/make_cipher.py" || true
+chown -R ctf:ctf "$CTF_BASE/challenges/04_crypto_xor"
 
-# seed SUID notes helper
+# --- seed Priv-Esc helper (Door 5) ---
+echo "[*] Seeding Priv-Esc helper"
 bash "$CTF_BASE/challenges/05_priv_esc_path_hijack/seed_notes.sh" || true
 
-# create per-VM codenames and install ctf CLI
-wordlist=(Anvil Raven Forge Lantern Obsidian Ember Granite Cipher Aegis Nova Titan Marble Quartz Shadow Falcon Iron Torch Atlas Comet Helix Summit Vortex Echo Glyph Sable Prism Relic Aspen Nightfall)
-mkcode() { echo "${wordlist[$((RANDOM%${#wordlist[@]}))]}${wordlist[$((RANDOM%${#wordlist[@]}))]}$((RANDOM%90+10))"; }
-
+# --- Cruise Ship event: fixed door codes from repo + 'ctf' CLI install ---
+echo "[*] Installing Cruise Ship door codes + CLI"
 META_DIR="$CTF_BASE/challenges"
 META_ENV="$META_DIR/meta.env"
 DOOR_CODES="$CTF_BASE/door-codes.txt"
 
+mkdir -p "$META_DIR"
 if [ ! -f "$META_ENV" ]; then
-  WEB_CODE=$(mkcode)
-  FORENSICS_CODE=$(mkcode)
-  RE_CODE=$(mkcode)
-  CRYPTO_CODE=$(mkcode)
-  PRIVESC_CODE=$(mkcode)
-
-  cat > "$META_ENV" <<EOF
-# Auto-generated per-VM codenames for door verification
-WEB_CODE="$WEB_CODE"
-FORENSICS_CODE="$FORENSICS_CODE"
-RE_CODE="$RE_CODE"
-CRYPTO_CODE="$CRYPTO_CODE"
-PRIVESC_CODE="$PRIVESC_CODE"
+  if [ -f "$CTF_BASE/src/challenges/meta.env" ]; then
+    cp "$CTF_BASE/src/challenges/meta.env" "$META_ENV"
+  else
+    # fallback defaults if repo file missing
+    cat > "$META_ENV" <<'EOF'
+WEB_CODE="MickeyRocks468"
+FORENSICS_CODE="PumpkinDrop25"
+RE_CODE="DOOR CODE"
+CRYPTO_CODE="OpenSesame"
+PRIVESC_CODE="I WANT TO WIN"
 EOF
-
-  cat > "$DOOR_CODES" <<EOF
-# Door codenames for map placement (instructor reads this to label doors)
-Door 1 (WEB)         codename: $WEB_CODE
-Door 2 (FORENSICS)   codename: $FORENSICS_CODE
-Door 3 (RE)          codename: $RE_CODE
-Door 4 (CRYPTO)      codename: $CRYPTO_CODE
-Door 5 (PRIVESC)     codename: $PRIVESC_CODE
-EOF
-  chmod 640 "$DOOR_CODES"
+  fi
 fi
+chown ctf:ctf "$META_ENV"
+chmod 644 "$META_ENV"
 
-# install 'ctf' CLI
+# Build instructor cheat-sheet from meta.env
+# shellcheck disable=SC1090
+. "$META_ENV"
+cat > "$DOOR_CODES" <<EOF
+Cruise Ship CTF — Door Codes
+Door 1 (WEB)        : $WEB_CODE
+Door 2 (FORENSICS)  : $FORENSICS_CODE
+Door 3 (RE)         : $RE_CODE
+Door 4 (CRYPTO)     : $CRYPTO_CODE
+Door 5 (PRIVESC)    : $PRIVESC_CODE
+EOF
+chmod 640 "$DOOR_CODES"
+
+# Install the 'ctf' CLI (case/space tolerant code check)
 install -m 0755 /dev/stdin /usr/local/bin/ctf <<'CTFEOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -157,18 +173,18 @@ STATE_DIR="/opt/ctf/state"
 source "$META_ENV"
 
 bold(){ printf "\033[1m%s\033[0m\n" "$*"; }
-info(){ printf "[*] %s\n" "$*"; }
 ok(){ printf "[✓] %s\n" "$*"; }
 err(){ printf "[✗] %s\n" "$*" >&2; }
+normalize(){ tr '[:upper:]' '[:lower:]' | tr -d ' '; }  # lower + strip spaces
 
 usage(){
   cat <<USAGE
 ctf — WVU Midterm CTF helper
 
 Commands:
-  ctf menu          Interactive picker (requires codename from the Minecraft door)
-  ctf start <door>  Start door by number (1..5) or name (web|forensics|re|crypto|privesc)
-  ctf status        Show which doors have been started on this VM
+  ctf menu          Interactive picker (enter codename from the Minecraft door)
+  ctf start <door>  Start door 1..5 or name (web|forensics|re|crypto|privesc)
+  ctf status        Show started doors on this VM
   ctf codes         Print this VM's codenames (for instructor)
 USAGE
 }
@@ -185,26 +201,20 @@ door_name(){
 }
 
 verify_codename(){
-  local door="$1" entered="$2" var
+  local door="$1" entered="$2" needed
   case "$door" in
-    WEB) var="$WEB_CODE";;
-    FORENSICS) var="$FORENSICS_CODE";;
-    RE) var="$RE_CODE";;
-    CRYPTO) var="$CRYPTO_CODE";;
-    PRIVESC) var="$PRIVESC_CODE";;
+    WEB)       needed="$WEB_CODE";;
+    FORENSICS) needed="$FORENSICS_CODE";;
+    RE)        needed="$RE_CODE";;
+    CRYPTO)    needed="$CRYPTO_CODE";;
+    PRIVESC)   needed="$PRIVESC_CODE";;
     *) return 1;;
   esac
-  [[ "${entered,,}" == "${var,,}" ]]
+  [[ "$(printf '%s' "$entered" | normalize)" == "$(printf '%s' "$needed" | normalize)" ]]
 }
 
-stamp_started(){
-  mkdir -p "$STATE_DIR"
-  touch "$STATE_DIR/started_$1"
-}
-
-is_started(){
-  [[ -f "$STATE_DIR/started_$1" ]]
-}
+stamp_started(){ mkdir -p "$STATE_DIR"; touch "$STATE_DIR/started_$1"; }
+is_started(){ [[ -f "$STATE_DIR/started_$1" ]]; }
 
 start_door(){
   local door="$1"
@@ -212,30 +222,24 @@ start_door(){
     WEB)
       systemctl enable --now 468ctf-vulnapp.service >/dev/null 2>&1 || true
       bold "Door 1 (WEB) — SQLi"
-      echo "Open: http://127.0.0.1:5001"
-      echo "Hint: login trusts your quotes. Admin sees more."
-      echo "Submit flag in scoreboard: http://127.0.0.1:1337"
+      echo "Open:  http://127.0.0.1:5001"
+      echo "Score: http://127.0.0.1:1337"
       ;;
     FORENSICS)
-      bold "Door 2 (FORENSICS) — PNG with extra baggage"
+      bold "Door 2 (FORENSICS) — PNG/ZIP polyglot"
       echo "Artifact: /opt/ctf/challenges/02_forensics_stego/artifacts/cover.png"
-      echo "Hint: Some images carry extra baggage. Try 'zipinfo', 'binwalk', or 'strings'."
       ;;
     RE)
       bold "Door 3 (RE) — Tiny ELF gate"
-      echo "Run the checker: /opt/ctf/challenges/03_reverse_engineering/gate"
-      echo "Hint: recover or bypass the computed key to print the flag."
+      echo "Run: /opt/ctf/challenges/03_reverse_engineering/gate"
       ;;
     CRYPTO)
       bold "Door 4 (CRYPTO) — XOR + Base64"
       echo "Cipher: /opt/ctf/challenges/04_crypto_xor/cipher.txt"
-      echo "Hint: flags start with WVUCTF{...}. Use a crib to recover the key."
       ;;
     PRIVESC)
       bold "Door 5 (PRIVESC) — PATH hijack"
-      echo "SUID helper: /usr/local/bin/ctf-notes"
-      echo "Hint: a script calls 'sh' without full path. Control PATH to escalate."
-      echo "Flag file: /root/flag_privesc.txt"
+      echo "SUID: /usr/local/bin/ctf-notes"
       ;;
   esac
   stamp_started "$door"
@@ -252,26 +256,14 @@ cmd_menu(){
   read -rp "Enter door number: " pick
   local door; door=$(door_name "$pick") || { err "Invalid door."; exit 2; }
   read -rp "Enter codename printed on the Minecraft door: " code
-  if verify_codename "$door" "$code"; then
-    ok "Codename accepted."
-    start_door "$door"
-  else
-    err "Incorrect codename for $door. Ask your team captain to read the door again."
-    exit 3
-  fi
+  if verify_codename "$door" "$code"; then ok "Codename accepted."; start_door "$door"; else err "Incorrect codename."; exit 3; fi
 }
 
 cmd_start(){
-  local pick="$1"; shift || true
+  local pick="${1:-}"; [ -n "$pick" ] || { err "Usage: ctf start <door>"; exit 1; }
   local door; door=$(door_name "$pick") || { err "Unknown door '$pick'."; exit 2; }
   read -rp "Enter codename for $door: " code
-  if verify_codename "$door" "$code"; then
-    ok "Codename accepted."
-    start_door "$door"
-  else
-    err "Incorrect codename."
-    exit 3
-  fi
+  if verify_codename "$door" "$code"; then ok "Codename accepted."; start_door "$door"; else err "Incorrect codename."; exit 3; fi
 }
 
 cmd_status(){
@@ -290,10 +282,9 @@ cmd_codes(){
 }
 
 main(){
-  local sub="${1:-help}"
-  case "$sub" in
+  case "${1:-help}" in
     menu)    cmd_menu;;
-    start)   shift || true; [ $# -ge 1 ] || { err "Usage: ctf start <door>"; exit 1; }; cmd_start "$1";;
+    start)   shift || true; cmd_start "${1:-}";;
     status)  cmd_status;;
     codes)   cmd_codes;;
     help|-h|--help) usage;;
@@ -302,12 +293,15 @@ main(){
 }
 main "$@"
 CTFEOF
-
 chmod 755 /usr/local/bin/ctf
 
-# enable scoreboard service
+# --- enable scoreboard service now ---
+echo "[*] Enabling scoreboard service"
 systemctl daemon-reload
 systemctl enable --now 468ctf-scoreboard.service || true
 
-echo "[*] Setup finished. Scoreboard: http://127.0.0.1:1337"
-echo "Door codes are available in $DOOR_CODES (instructor view)."
+echo
+echo " Setup finished."
+echo "Scoreboard:   http://127.0.0.1:1337"
+echo "Door codes:   $CTF_BASE/door-codes.txt  (or: sudo ctf codes)"
+echo "Door 1 app:   http://127.0.0.1:5001  (starts after 'ctf menu' → WEB)"
